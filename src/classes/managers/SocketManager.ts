@@ -52,7 +52,8 @@ export class SocketManager extends EventBasedManager<SocketEvents> {
      * @returns The {@link RoomInfoPacket} received on initial connection.
      * @throws {@link SocketError} if failed to connect or no websocket API is available.
      * @throws {@link TypeError} if provided URL is malformed or invalid protocol.
-     * @remarks If the port is omitted, client will default to `38281`.
+     * @remarks If the port is omitted, client will default to `38281`. An explicitly specified port is always
+     * respected — including a scheme's standard port such as `443` for `wss://` (e.g. a server behind a TLS proxy).
      *
      * If the protocol is omitted, client will attempt to connect via `wss`, then fallback to `ws` if unsuccessful.
      */
@@ -63,22 +64,35 @@ export class SocketManager extends EventBasedManager<SocketEvents> {
         if (typeof url === "string") {
             // Check if protocol was provided and URL is valid-ish, if not we'll add wss and fallback to ws if it fails.
             const pattern = /^([a-zA-Z]+:)\/\/[A-Za-z0-9_.~\-:]+/i;
-            if (!pattern.test(url)) {
+            const hasProtocol = pattern.test(url);
+
+            // Whether the address already specifies a port. Determined from the raw string because `URL` normalizes a
+            // scheme's default port (e.g. `443` for `wss:`) away to an empty string, making an explicit standard port
+            // indistinguishable from "no port" — which would then be overwritten with 38281 below, leaving a server
+            // behind TLS on :443 unreachable.
+            const authority = (hasProtocol ? url.slice(url.indexOf("://") + 3) : url).split("/")[0];
+            const hasPort = /:\d+$/.test(authority);
+
+            if (!hasProtocol) {
+                // No protocol: default to the Archipelago port only if one wasn't given, then try wss and fall back to ws.
+                const address = hasPort ? url : `${url}:38281`;
                 try {
                     // First try "wss".
-                    return await this.connect(new URL(`wss://${url}`));
+                    return await this.connect(new URL(`wss://${address}`));
                 } catch {
                     // Nope, try "ws".
-                    return await this.connect(new URL(`ws://${url}`));
+                    return await this.connect(new URL(`ws://${address}`));
                 }
             }
 
             // Protocol provided, continue as is.
             url = new URL(url);
-        }
 
-        // If port is omitted, default to 38281.
-        url.port = url.port || "38281";
+            // If port is omitted, default to 38281 (an explicitly given port, including a standard one, is kept).
+            if (!hasPort) {
+                url.port = "38281";
+            }
+        }
 
         // Disallow any protocols that are not `ws` or `wss`.
         if (url.protocol !== "wss:" && url.protocol !== "ws:") {
